@@ -1,197 +1,168 @@
 import os
 import numpy as np
 from astropy.io import fits
+from PIL import Image
+import tensorflow as tf
 from tensorflow.keras.models import load_model
+import gc
 
-def load_fits_image(file_path):
-    """Load a FITS image and return data and header."""
-    with fits.open(file_path) as hdul:
-        header = hdul[0].header.copy()
-        data = hdul[0].data.astype(np.float32)
-        
-        # Handle different dimensional data
-        if len(data.shape) > 2:
-            print(f"[WARNING] Input image has {len(data.shape)} dimensions: {data.shape}")
-            # If 3D or 4D, take the first frame/channel
-            while len(data.shape) > 2:
-                data = data[0]
-            print("[INFO] Converted to 2D image with shape:", data.shape)
-        
-        print(f"[DEBUG] Input image stats - Min: {np.min(data):.2f}, Max: {np.max(data):.2f}, Mean: {np.mean(data):.2f}")
-        print(f"[DEBUG] Input image dtype: {data.dtype}")
-        return data, header
+def log(message):
+    """Log messages to console."""
+    print(f"[INFO] {message}")
 
-def pad_image(image, chunk_size, overlap):
-    """Pad image to ensure it can be divided into full chunks."""
+def load_image(file_path):
+    """Load image from various formats (FITS, TIFF, XISF)."""
+    file_ext = file_path.lower().split('.')[-1]
+    
+    if file_ext in ['fits', 'fit']:
+        with fits.open(file_path) as hdul:
+            data = hdul[0].data.astype(np.float32)
+            if data.ndim > 2:
+                data = data[0] if data.ndim == 3 else data[0][0]
+    elif file_ext in ['tiff', 'tif']:
+        data = np.array(Image.open(file_path)).astype(np.float32)
+        if data.ndim > 2:
+            data = np.mean(data, axis=2)  # Convert RGB to grayscale
+    else:
+        raise ValueError(f"Unsupported file format: {file_ext}")
+    
+    return data
+
+def normalize_image(image):
+    """Normalize image to 0-1 range."""
+    min_val = np.min(image)
+    max_val = np.max(image)
+    if max_val == min_val:
+        return image - min_val
+    return (image - min_val) / (max_val - min_val), min_val, max_val
+
+def denormalize_image(image, min_val, max_val):
+    """Denormalize image back to original range."""
+    return image * (max_val - min_val) + min_val
+
+def process_image(model, image, chunk_size=128, overlap=32):
+    """Process large image by dividing into overlapping chunks."""
     h, w = image.shape
-    step = chunk_size - overlap
+    pad_h = (chunk_size - h % chunk_size) if h % chunk_size != 0 else 0
+    pad_w = (chunk_size - w % chunk_size) if w % chunk_size != 0 else 0
     
-    # Calculate needed padding
-    pad_h = (step - h % step) % step if h % step != 0 else 0
-    pad_w = (step - w % step) % step if w % step != 0 else 0
+    # Pad image
+    padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
+    ph, pw = padded.shape
     
-    if pad_h > 0 or pad_w > 0:
-        print(f"[INFO] Padding image with {pad_h} rows and {pad_w} columns")
-        padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
-        return padded, (pad_h, pad_w)
-    return image, (0, 0)
-
-def divide_into_chunks(image, chunk_size=128, overlap=32):
-    """Divide an image into chunks with overlap."""
-    if len(image.shape) != 2:
-        raise ValueError(f"Expected 2D image, got shape {image.shape}")
+    # Create output arrays
+    background = np.zeros_like(padded)
+    weight_map = np.zeros_like(padded)
     
-    h, w = image.shape
-    step = chunk_size - overlap
-    chunks = []
-    
-    # Pad image if needed
-    padded_image, (pad_h, pad_w) = pad_image(image, chunk_size, overlap)
-    padded_h, padded_w = padded_image.shape
-    
-    for i in range(0, padded_h - chunk_size + 1, step):
-        for j in range(0, padded_w - chunk_size + 1, step):
-            chunk = padded_image[i:i+chunk_size, j:j+chunk_size]
-            chunks.append((chunk, i, j))
-    
-    print(f"[DEBUG] Created {len(chunks)} chunks of size {chunk_size}x{chunk_size}")
-    return chunks, (pad_h, pad_w)
-
-def reconstruct_image(chunks, predictions, scaling_factors, chunk_size, overlap, original_shape, padding):
-    """Reconstruct the full image from predicted chunks."""
-    pad_h, pad_w = padding
-    h, w = original_shape
-    padded_h = h + pad_h
-    padded_w = w + pad_w
-    
-    step = chunk_size - overlap
-    output = np.zeros((padded_h, padded_w))
-    count = np.zeros((padded_h, padded_w))
-    
-    for (_, i, j), prediction, (chunk_min, chunk_max) in zip(chunks, predictions, scaling_factors):
-        # Ensure we're working with 2D data
-        pred = prediction.squeeze()
-        
-        # Denormalize the prediction
-        denorm_pred = denormalize_prediction(pred, chunk_min, chunk_max)
-        
-        # Add to the output and count arrays
-        output[i:i+chunk_size, j:j+chunk_size] += denorm_pred
-        count[i:i+chunk_size, j:j+chunk_size] += 1
+    # Process chunks with overlap
+    for i in range(0, ph - chunk_size + 1, chunk_size - overlap):
+        for j in range(0, pw - chunk_size + 1, chunk_size - overlap):
+            # Extract chunk
+            chunk = padded[i:i+chunk_size, j:j+chunk_size]
+            
+            # Create weight mask for blending
+            weight = np.ones((chunk_size, chunk_size))
+            if overlap > 0:
+                weight[:overlap, :] *= np.linspace(0, 1, overlap)[:, np.newaxis]
+                weight[-overlap:, :] *= np.linspace(1, 0, overlap)[:, np.newaxis]
+                weight[:, :overlap] *= np.linspace(0, 1, overlap)
+                weight[:, -overlap:] *= np.linspace(1, 0, overlap)
+            
+            # Process chunk
+            processed = model.predict(chunk[np.newaxis, ..., np.newaxis], verbose=0)[0, ..., 0]
+            
+            # Add to output with weight
+            background[i:i+chunk_size, j:j+chunk_size] += processed * weight
+            weight_map[i:i+chunk_size, j:j+chunk_size] += weight
     
     # Average overlapping regions
-    mask = count > 0
-    output[mask] /= count[mask]
+    background = background / np.maximum(weight_map, 1e-10)
     
-    # Remove padding to get back to original size
-    output = output[:h, :w]
+    # Remove padding
+    background = background[:h, :w]
     
-    print(f"[DEBUG] Reconstructed image stats - Min: {np.min(output):.2f}, Max: {np.max(output):.2f}, Mean: {np.mean(output):.2f}")
-    return output
+    return background
 
-def normalize_chunk(chunk):
-    """Normalize chunk to [0,1] range and return scaling factors."""
-    chunk_min = np.min(chunk)
-    chunk_max = np.max(chunk)
-    if chunk_max == chunk_min:
-        return np.zeros_like(chunk), chunk_min, chunk_max
-    normalized = (chunk - chunk_min) / (chunk_max - chunk_min)
-    return normalized, chunk_min, chunk_max
-
-def denormalize_prediction(pred, original_min, original_max):
-    """Denormalize prediction back to original scale."""
-    return pred * (original_max - original_min) + original_min
-
-def save_fits_image(data, header, output_file, image_type):
-    """Save FITS image with proper header preservation."""
-    # Ensure data is in the correct range and type
-    if image_type == 'starless':  # Only clip starless image
-        data = np.clip(data, 0, None)
+def save_image(image, output_path):
+    """Save image in the same format as input."""
+    file_ext = output_path.lower().split('.')[-1]
     
-    # Convert to the same data type as input if it was integer
-    if header.get('BITPIX', 0) > 0:
-        data = np.round(data).astype(np.uint16)
-    
-    # Update header
-    header['DATAMIN'] = np.min(data)
-    header['DATAMAX'] = np.max(data)
-    header['HISTORY'] = f'Processed with star removal - {image_type} image'
-    
-    # Create HDU and save
-    hdu = fits.PrimaryHDU(data=data, header=header)
-    hdu.writeto(output_file, overwrite=True)
-    
-    print(f"[DEBUG] {image_type} image saved stats - "
-          f"Min: {np.min(data):.2f}, Max: {np.max(data):.2f}, Mean: {np.mean(data):.2f}")
+    if file_ext in ['fits', 'fit']:
+        hdu = fits.PrimaryHDU(image.astype(np.float32))
+        hdu.writeto(output_path, overwrite=True)
+    elif file_ext in ['tiff', 'tif']:
+        # Scale to 16-bit range
+        scaled = ((image - np.min(image)) / (np.max(image) - np.min(image)) * 65535).astype(np.uint16)
+        Image.fromarray(scaled).save(output_path)
 
-# Main processing
-try:
-    # Load the model
-    model = load_model("chunk_based_unet.keras")
-    print("[INFO] Model loaded successfully.")
-    print(f"[DEBUG] Model input shape: {model.input_shape}")
-    print(f"[DEBUG] Model output shape: {model.output_shape}")
+def process_directory(model_path, input_dir, output_dir):
+    """Process all images in input directory."""
+    # Create output directories
+    starless_dir = os.path.join(output_dir, 'starless')
+    stars_dir = os.path.join(output_dir, 'stars_only')
+    os.makedirs(starless_dir, exist_ok=True)
+    os.makedirs(stars_dir, exist_ok=True)
+    
+    # Load model
+    model = load_model(model_path)
+    log(f"Loaded model from {model_path}")
+    
+    # Get list of supported files
+    supported_extensions = ('.fits', '.fit', '.tiff', '.tif', '.xisf')
+    files = [f for f in os.listdir(input_dir) if f.lower().endswith(supported_extensions)]
+    
+    for file in files:
+        try:
+            input_path = os.path.join(input_dir, file)
+            base_name = os.path.splitext(file)[0]
+            output_ext = os.path.splitext(file)[1]
+            
+            log(f"Processing {file}...")
+            
+            # Load and normalize image
+            image = load_image(input_path)
+            normalized, min_val, max_val = normalize_image(image)
+            
+            # Process image
+            background = process_image(model, normalized)
+            
+            # Calculate stars by subtracting background
+            stars = normalized - background
+            
+            # Denormalize images
+            background = denormalize_image(background, min_val, max_val)
+            stars = denormalize_image(stars, min_val, max_val)
+            
+            # Save outputs
+            save_image(background, os.path.join(starless_dir, f"{base_name}_starless{output_ext}"))
+            save_image(stars, os.path.join(stars_dir, f"{base_name}_stars{output_ext}"))
+            
+            log(f"Saved processed images for {file}")
+            
+            # Clean up memory
+            gc.collect()
+            
+        except Exception as e:
+            log(f"Error processing {file}: {str(e)}")
+            continue
 
+if __name__ == "__main__":
     # Configuration
-    remove_stars_folder = "removeStars"
-    output_folder = "output"
-    chunk_size = 128
-    overlap = 32
-
-    # Ensure output folder exists
-    os.makedirs(output_folder, exist_ok=True)
-
-    # Process each FITS file
-    for filename in os.listdir(remove_stars_folder):
-        if filename.endswith(".fits"):
-            input_file = os.path.join(remove_stars_folder, filename)
-            print(f"\n[INFO] Processing {input_file}...")
-
-            try:
-                # Load image
-                image, header = load_fits_image(input_file)
-                
-                # Divide into chunks
-                chunks, padding = divide_into_chunks(image, chunk_size, overlap)
-                predictions = []
-                scaling_factors = []
-                
-                # Process each chunk
-                for chunk, _, _ in chunks:
-                    # Normalize chunk
-                    normalized_chunk, chunk_min, chunk_max = normalize_chunk(chunk)
-                    scaling_factors.append((chunk_min, chunk_max))
-                    
-                    # Predict
-                    input_chunk = normalized_chunk[np.newaxis, ..., np.newaxis]
-                    pred = model.predict(input_chunk, verbose=0)
-                    predictions.append(pred)
-                    
-                    # Debug first few chunks
-                    if len(predictions) <= 3:
-                        print(f"[DEBUG] Chunk {len(predictions)} prediction stats - "
-                              f"Min: {np.min(pred):.2f}, Max: {np.max(pred):.2f}, Mean: {np.mean(pred):.2f}")
-                        print(f"[DEBUG] Chunk {len(predictions)} scale - "
-                              f"Min: {chunk_min:.2f}, Max: {chunk_max:.2f}")
-
-                # Reconstruct full image
-                starless_image = reconstruct_image(chunks, predictions, scaling_factors, 
-                                                 chunk_size, overlap, image.shape, padding)
-                
-                # Calculate stars-only image
-                stars_only_image = image - starless_image
-
-                # Save outputs
-                starless_output = os.path.join(output_folder, f"starless_{filename}")
-                stars_output = os.path.join(output_folder, f"stars_{filename}")
-                
-                save_fits_image(starless_image, header.copy(), starless_output, "starless")
-                save_fits_image(stars_only_image, header.copy(), stars_output, "stars")
-
-            except Exception as e:
-                print(f"[ERROR] Failed to process {filename}: {str(e)}")
-                continue
-
-except Exception as e:
-    print(f"[ERROR] An error occurred: {str(e)}")
-    raise
+    MODEL_PATH = "chunk_based_unet.keras"  # Your trained model path
+    INPUT_DIR = "removeStars"              # Input directory
+    OUTPUT_DIR = "output"                  # Output directory
+    
+    # Configure GPU memory growth
+    physical_devices = tf.config.list_physical_devices('GPU')
+    if physical_devices:
+        try:
+            for device in physical_devices:
+                tf.config.experimental.set_memory_growth(device, True)
+            log(f"GPU(s) found and configured: {physical_devices}")
+        except RuntimeError as e:
+            log(f"GPU configuration error: {e}")
+    else:
+        log("No GPU detected, using CPU")
+    
+    # Process images
+    process_directory(MODEL_PATH, INPUT_DIR, OUTPUT_DIR)
