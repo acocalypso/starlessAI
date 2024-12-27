@@ -5,7 +5,6 @@ from scipy.ndimage import gaussian_filter
 import tensorflow as tf
 from multiprocessing import Pool, cpu_count
 from tensorflow.keras.models import load_model
-import matplotlib.pyplot as plt
 import gc
 
 # Shortcuts for convenience
@@ -168,7 +167,8 @@ def save_chunks(chunks, labels, chunk_dir='chunks'):
     """Save individual chunks to disk."""
     os.makedirs(chunk_dir, exist_ok=True)
     for i, (chunk, label) in enumerate(zip(chunks, labels)):
-        np.savez_compressed(f"{chunk_dir}/chunk_{i}.npz", chunk=chunk, label=label)  # Save compressed
+        np.save(f"{chunk_dir}/chunk_{i}.npy", chunk)
+        np.save(f"{chunk_dir}/label_{i}.npy", label)
     return i + 1  # Return number of chunks saved
 
 def load_chunk_batch(chunk_dir, start_idx, batch_size):
@@ -177,9 +177,8 @@ def load_chunk_batch(chunk_dir, start_idx, batch_size):
     y_batch = []
     for i in range(start_idx, min(start_idx + batch_size, len(os.listdir(chunk_dir))//2)):
         try:
-            data = np.load(f"{chunk_dir}/chunk_{i}.npz")
-            X_batch.append(data['chunk'])
-            y_batch.append(data['label'])
+            X_batch.append(np.load(f"{chunk_dir}/chunk_{i}.npy"))
+            y_batch.append(np.load(f"{chunk_dir}/label_{i}.npy"))
         except:
             break
     return np.array(X_batch), np.array(y_batch)
@@ -207,9 +206,10 @@ class ChunkDataGenerator(tf.keras.utils.Sequence):
         y_batch = []
         
         for i in batch_indexes:
-            data = np.load(f"{self.chunk_dir}/chunk_{i}.npz")
-            X_batch.append(data['chunk'])
-            y_batch.append(data['label'])
+            X = np.load(f"{self.chunk_dir}/chunk_{i}.npy")
+            y = np.load(f"{self.chunk_dir}/label_{i}.npy")
+            X_batch.append(X)
+            y_batch.append(y)
             
         return np.array(X_batch), np.array(y_batch)
 
@@ -227,36 +227,7 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
         tf.keras.backend.clear_session()
 
 # =============================
-# 4. Plotting Function
-# =============================
-
-def plot_training_history(history):
-    """Plot training and validation metrics."""
-    plt.figure(figsize=(12, 6))
-
-    # Plot loss
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title('Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    # Plot MAE
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['mae'], label='Training MAE')
-    plt.plot(history.history['val_mae'], label='Validation MAE')
-    plt.title('Mean Absolute Error')
-    plt.xlabel('Epochs')
-    plt.ylabel('MAE')
-    plt.legend()
-
-    plt.tight_layout()
-    plt.show()
-
-# =============================
-# 5. Main Code
+# 4. Main Code
 # =============================
 
 if __name__ == '__main__':
@@ -307,32 +278,32 @@ if __name__ == '__main__':
             # Encoder
             c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
             c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(c1)
-            c1 = layers.Dropout(0.1)(c1)  # Added dropout
+            c1 = layers.Dropout(0.1)(c1)
             p1 = layers.MaxPooling2D((2, 2))(c1)
 
             c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(p1)
             c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c2)
-            c2 = layers.Dropout(0.1)(c2)  # Added dropout
+            c2 = layers.Dropout(0.1)(c2)
             p2 = layers.MaxPooling2D((2, 2))(c2)
 
             # Bottleneck
             c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(p2)
             c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(c3)
-            c3 = layers.Dropout(0.2)(c3)  # Added dropout
+            c3 = layers.Dropout(0.2)(c3)
 
             # Decoder
             u4 = layers.UpSampling2D((2, 2))(c3)
             u4 = layers.concatenate([u4, c2])
             c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(u4)
             c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c4)
-            c4 = layers.Dropout(0.1)(c4)  # Added dropout
+            c4 = layers.Dropout(0.1)(c4)
 
             u5 = layers.UpSampling2D((2, 2))(c4)
             u5 = layers.concatenate([u5, c1])
             c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(u5)
             c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(c5)
-            c5 = layers.Dropout(0.1)(c5)  # Added dropout
-
+            c5 = layers.Dropout(0.1)(c5)
+            
             outputs = layers.Conv2D(1, (1, 1), activation='linear')(c5)
             return models.Model(inputs=[inputs], outputs=[outputs])
 
@@ -377,8 +348,6 @@ if __name__ == '__main__':
             callbacks=callbacks,
             verbose=1
         )
-        # Plot training history
-        plot_training_history(history)
     except Exception as e:
         log(f"Training failed with error: {str(e)}")
         model.save('emergency_backup_model.keras')
