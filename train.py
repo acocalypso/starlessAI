@@ -127,7 +127,7 @@ def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=10000)
         return X_train, y_train
 
     # Process files in larger batches
-    batch_size = 8
+    batch_size = 8  # Increased batch size
     X_train, y_train = [], []
     
     for i in range(0, len(new_files), batch_size):
@@ -184,20 +184,6 @@ def load_chunk_batch(chunk_dir, start_idx, batch_size):
             break
     return np.array(X_batch), np.array(y_batch)
 
-def augment_chunk(chunk):
-    """Apply random augmentations to chunk."""
-    if np.random.rand() > 0.5:
-        # Random brightness variation
-        chunk = chunk * np.random.uniform(0.8, 1.2)
-    if np.random.rand() > 0.5:
-        # Random contrast
-        mean = np.mean(chunk)
-        chunk = (chunk - mean) * np.random.uniform(0.8, 1.2) + mean
-    if np.random.rand() > 0.5:
-        # Random rotation
-        k = np.random.randint(1, 4)  # 90, 180, or 270 degrees
-        chunk = np.rot90(chunk, k)
-    return chunk
 
 # =============================
 # 2. Memory-Optimized Dataset Generator
@@ -224,13 +210,6 @@ class ChunkDataGenerator(tf.keras.utils.Sequence):
         for i in batch_indexes:
             X = np.load(f"{self.chunk_dir}/chunk_{i}.npy")
             y = np.load(f"{self.chunk_dir}/label_{i}.npy")
-            
-            if self.is_training:
-                # Apply augmentation to both input and target
-                if np.random.rand() > 0.5:
-                    X = augment_chunk(X)
-                    y = augment_chunk(y)
-                    
             X_batch.append(X)
             y_batch.append(y)
             
@@ -258,8 +237,8 @@ if __name__ == '__main__':
     input_folder = "input"
     chunk_size = 128
     overlap = 32
-    batch_size = 16
-    epochs = 50
+    batch_size = 16  # Increased batch size
+    epochs = 50     # Increased epochs
     model_checkpoint_path = 'chunk_based_unet.keras'
     chunk_dir = 'chunks'
     val_chunk_dir = 'val_chunks'
@@ -357,13 +336,7 @@ if __name__ == '__main__':
     
     # Use mixed precision optimizer
     optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
-        tf.keras.optimizers.Adam(
-            learning_rate=5e-5,
-            beta_1=0.9,
-            beta_2=0.999,
-            epsilon=1e-8,
-            clipnorm=1.0
-        )
+        tf.keras.optimizers.Adam(learning_rate=0.0001)
     )
 
     model.compile(optimizer=optimizer, loss='mean_squared_error', metrics=['mae'])
@@ -373,23 +346,19 @@ if __name__ == '__main__':
         tf.keras.callbacks.ModelCheckpoint(
             model_checkpoint_path,
             save_best_only=True,
-            monitor='val_loss',
-            mode='min',
-            verbose=1
+            monitor='val_loss'
         ),
         tf.keras.callbacks.EarlyStopping(
-            patience=10,        
+            patience=20,        # Increased patience
             monitor='val_loss',
             restore_best_weights=True,
-            min_delta=0.0001,   
-            verbose=1
+            min_delta=0.0001   # Added minimum delta for improvement
         ),
-        tf.keras.callbacks.ReduceLROnPlateau(  
+        tf.keras.callbacks.ReduceLROnPlateau(  # Added learning rate reduction
             monitor='val_loss',
-            factor=0.2,
-            patience=3,
-            min_lr=1e-6,
-            verbose=1
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6
         ),
         MemoryCleanupCallback()
     ]
