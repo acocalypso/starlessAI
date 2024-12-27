@@ -106,6 +106,7 @@ def load_processed_images(processed_file='processed_images.txt'):
 def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=10000):
     """Prepare the dataset using multiprocessing with memory constraints."""
     log(f"Preparing dataset from folder: {input_folder}")
+    print(os.listdir("input"))
     fits_files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) 
                  if f.lower().endswith(('.fits', '.fit'))]
     
@@ -272,6 +273,7 @@ if __name__ == '__main__':
     else:
         # Build a new model
         log("Creating new model...")
+        print(os.listdir("input"))
         def unet_model(input_shape):
             inputs = layers.Input(shape=input_shape)
 
