@@ -1,8 +1,0 @@
-input/RGB_Cocoon_Nebula.fit
-input/California_Nebula.fit
-input/final_NGC2371_LRGB_cropped.fit
-input/Elephants_Trunk_Nebula.fit
-input/M33_DSLR.fit
-input/HaRGB.fit
-input/final_NGC3938_LRGB.fit
-input/HaLRGB.fit
