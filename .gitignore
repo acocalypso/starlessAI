@@ -1,0 +1,8 @@
+input/*.fit
+input/*.fits
+output/*.fits
+output/*.fit
+chunks/*
+venv/
+removeStars/*.fit
+removeStars/*.fits
