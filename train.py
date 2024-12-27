@@ -112,7 +112,7 @@ def load_processed_images(processed_file='processed_images.txt'):
             return set(line.strip() for line in f)
     return set()
 
-def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=50000):
+def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=30000):
     """Prepare the dataset using multiprocessing with memory constraints."""
     log(f"Preparing dataset from folder: {input_folder}")
     fits_files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) 
@@ -253,7 +253,7 @@ if __name__ == '__main__':
     # Process and save chunks to disk
     if not os.path.exists(chunk_dir):
         log("Processing dataset and saving chunks...")
-        X_train, y_train = prepare_dataset(input_folder, chunk_size, overlap, max_samples=50000)
+        X_train, y_train = prepare_dataset(input_folder, chunk_size, overlap, max_samples=30000)
 
         # Split dataset
         from sklearn.model_selection import train_test_split
