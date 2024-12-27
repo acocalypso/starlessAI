@@ -253,7 +253,7 @@ if __name__ == '__main__':
     # Process and save chunks to disk
     if not os.path.exists(chunk_dir):
         log("Processing dataset and saving chunks...")
-        X_train, y_train = prepare_dataset(input_folder, chunk_size, overlap, max_samples=10000)
+        X_train, y_train = prepare_dataset(input_folder, chunk_size, overlap, max_samples=50000)
 
         # Split dataset
         from sklearn.model_selection import train_test_split
