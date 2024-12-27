@@ -6,11 +6,20 @@ import tensorflow as tf
 from multiprocessing import Pool, cpu_count
 from tensorflow.keras.models import load_model
 import gc
+import pynvml
 
 # Shortcuts for convenience
 keras = tf.keras
 layers = keras.layers
 models = keras.models
+
+# Get total GPU memory
+pynvml.nvmlInit()
+handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # First GPU
+info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+total_memory = info.total  # Total memory in bytes
+target_memory = int(total_memory * 0.9)  # 90% of total memory in bytes
+target_memory_mb = target_memory // (1024*1024)  # Convert to MB
 
 # GPU Configuration with more conservative memory settings
 physical_devices = tf.config.list_physical_devices('GPU')
@@ -21,9 +30,9 @@ if physical_devices:
             # More conservative memory limit (3GB)
             tf.config.set_logical_device_configuration(
                 device,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=1024*3)]  # 3GB limit
+                [tf.config.LogicalDeviceConfiguration(memory_limit=target_memory_mb)]
             )
-        print(f"GPU(s) found and configured: {physical_devices}")
+        print(f"GPU(s) found and configured with {target_memory_mb}MB memory limit")
     except RuntimeError as e:
         print(f"GPU configuration error: {e}")
 else:

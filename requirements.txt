@@ -3,4 +3,4 @@ astropy
 scipy
 tensorflow[and-cuda]
 scikit-learn
-matplotlib
+pynvml
