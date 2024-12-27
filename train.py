@@ -112,7 +112,7 @@ def load_processed_images(processed_file='processed_images.txt'):
             return set(line.strip() for line in f)
     return set()
 
-def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=10000):
+def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=50000):
     """Prepare the dataset using multiprocessing with memory constraints."""
     log(f"Preparing dataset from folder: {input_folder}")
     fits_files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) 
