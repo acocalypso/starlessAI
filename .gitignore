@@ -7,5 +7,5 @@ venv/
 removeStars/*.fit
 removeStars/*.fits
 val_chunks/*
-emergency_backup_model.keras
+*.keras
 processed_images.txt

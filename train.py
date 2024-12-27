@@ -47,16 +47,16 @@ def load_fits_image(file_path):
     with fits.open(file_path) as hdul:
         # Get the primary HDU data
         data = hdul[0].data.astype(np.float32)
-        
+
         # If data is 3D or 4D, take the first 2D slice
         if data.ndim > 2:
             data = data[0] if data.ndim == 3 else data[0][0]
             log(f"Reduced {file_path} dimensions to 2D")
-            
+
         # Ensure we have a 2D array
         if data.ndim != 2:
             raise ValueError(f"Could not convert {file_path} to 2D array. Shape: {data.shape}")
-            
+
         return data
 
 def divide_into_chunks(image, chunk_size=128, overlap=32):
@@ -70,7 +70,7 @@ def divide_into_chunks(image, chunk_size=128, overlap=32):
             chunk = image[i:i+chunk_size, j:j+chunk_size]
             if chunk.shape == (chunk_size, chunk_size):
                 chunks.append((chunk, i, j))
-    
+
     return chunks
 
 def simulate_background(chunk):
@@ -82,12 +82,12 @@ def process_file(file_path, chunk_size=128, overlap=32):
     log(f"Processing file: {file_path}")
     image = load_fits_image(file_path)
     chunks = divide_into_chunks(image, chunk_size, overlap)
-    
+
     data_pairs = []
     for chunk, _i, _j in chunks:
         background = simulate_background(chunk)
         data_pairs.append((chunk, background))
-    
+
     return data_pairs
 
 def save_processed_images(processed_images, processed_file='processed_images.txt'):
@@ -106,13 +106,12 @@ def load_processed_images(processed_file='processed_images.txt'):
 def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=10000):
     """Prepare the dataset using multiprocessing with memory constraints."""
     log(f"Preparing dataset from folder: {input_folder}")
-    print(os.listdir("input"))
     fits_files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) 
                  if f.lower().endswith(('.fits', '.fit'))]
-    
+
     # Get previously processed images
     processed_images = load_processed_images()
-    
+
     # Filter out already processed files
     new_files = [file for file in fits_files if file not in processed_images]
     log(f"Found {len(new_files)} new images to process.")
@@ -129,39 +128,39 @@ def prepare_dataset(input_folder, chunk_size=128, overlap=32, max_samples=10000)
     # Process files in larger batches
     batch_size = 8  # Increased batch size
     X_train, y_train = [], []
-    
+
     for i in range(0, len(new_files), batch_size):
         batch_files = new_files[i:i + batch_size]
         with Pool(processes=min(cpu_count(), len(batch_files))) as pool:
             results = pool.starmap(process_file, [(file_path, chunk_size, overlap) for file_path in batch_files])
-        
+
         # Process results
         for result in results:
             for chunk, background in result:
                 # Add original data
                 X_train.append(chunk)
                 y_train.append(background)
-                
+
                 # Add flipped version
                 X_train.append(np.fliplr(chunk))
                 y_train.append(np.fliplr(background))
-                
+
                 # Add rotated version
                 X_train.append(np.rot90(chunk))
                 y_train.append(np.rot90(background))
-                
+
                 # Limit total samples
                 if len(X_train) >= max_samples:
                     log(f"Reached maximum sample limit of {max_samples}")
                     processed_images.update(batch_files)
                     save_processed_images(processed_images)
                     return np.array(X_train)[..., np.newaxis], np.array(y_train)[..., np.newaxis]
-        
+
         log(f"Processed {len(X_train)} samples so far...")
         processed_images.update(batch_files)
         save_processed_images(processed_images)
         gc.collect()
-    
+
     return np.array(X_train)[..., np.newaxis], np.array(y_train)[..., np.newaxis]
 
 def save_chunks(chunks, labels, chunk_dir='chunks'):
@@ -184,7 +183,6 @@ def load_chunk_batch(chunk_dir, start_idx, batch_size):
             break
     return np.array(X_batch), np.array(y_batch)
 
-
 # =============================
 # 2. Memory-Optimized Dataset Generator
 # =============================
@@ -206,13 +204,13 @@ class ChunkDataGenerator(tf.keras.utils.Sequence):
         batch_indexes = self.indexes[idx * self.batch_size:(idx + 1) * self.batch_size]
         X_batch = []
         y_batch = []
-        
+
         for i in batch_indexes:
             X = np.load(f"{self.chunk_dir}/chunk_{i}.npy")
             y = np.load(f"{self.chunk_dir}/label_{i}.npy")
             X_batch.append(X)
             y_batch.append(y)
-            
+
         return np.array(X_batch), np.array(y_batch)
 
     def on_epoch_end(self):
@@ -247,18 +245,18 @@ if __name__ == '__main__':
     if not os.path.exists(chunk_dir):
         log("Processing dataset and saving chunks...")
         X_train, y_train = prepare_dataset(input_folder, chunk_size, overlap, max_samples=10000)
-        
+
         # Split dataset
         from sklearn.model_selection import train_test_split
         X_train, X_val, y_train, y_val = train_test_split(
             X_train, y_train, test_size=0.2, random_state=42
         )
-        
+
         # Save chunks
         n_train = save_chunks(X_train, y_train, chunk_dir)
         n_val = save_chunks(X_val, y_val, val_chunk_dir)
         log(f"Saved {n_train} training chunks and {n_val} validation chunks")
-        
+
         # Clear memory
         del X_train, X_val, y_train, y_val
         gc.collect()
@@ -274,66 +272,43 @@ if __name__ == '__main__':
     else:
         # Build a new model
         log("Creating new model...")
-        print(os.listdir("input"))
         def unet_model(input_shape):
             inputs = layers.Input(shape=input_shape)
-        
-            # Encoder - Block 1
-            c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same', 
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(inputs)
-            c1 = layers.BatchNormalization()(c1)
-            c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(c1)
-            c1 = layers.BatchNormalization()(c1)
-            c1 = layers.Dropout(0.2)(c1)
+
+            # Encoder
+            c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
+            c1 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(c1)
+            c1 = layers.Dropout(0.1)(c1)
             p1 = layers.MaxPooling2D((2, 2))(c1)
-        
-            # Encoder - Block 2
-            c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(p1)
-            c2 = layers.BatchNormalization()(c2)
-            c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(c2)
-            c2 = layers.BatchNormalization()(c2)
-            c2 = layers.Dropout(0.2)(c2)
+
+            c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(p1)
+            c2 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c2)
+            c2 = layers.Dropout(0.1)(c2)
             p2 = layers.MaxPooling2D((2, 2))(c2)
-        
+
             # Bottleneck
-            c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(p2)
-            c3 = layers.BatchNormalization()(c3)
-            c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(c3)
-            c3 = layers.BatchNormalization()(c3)
-            c3 = layers.Dropout(0.3)(c3)
-        
-            # Decoder - Block 1
+            c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(p2)
+            c3 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(c3)
+            c3 = layers.Dropout(0.2)(c3)
+
+            # Decoder
             u4 = layers.UpSampling2D((2, 2))(c3)
             u4 = layers.concatenate([u4, c2])
-            c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(u4)
-            c4 = layers.BatchNormalization()(c4)
-            c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(c4)
-            c4 = layers.BatchNormalization()(c4)
-            c4 = layers.Dropout(0.2)(c4)
-        
-            # Decoder - Block 2
+            c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(u4)
+            c4 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c4)
+            c4 = layers.Dropout(0.1)(c4)
+
             u5 = layers.UpSampling2D((2, 2))(c4)
             u5 = layers.concatenate([u5, c1])
-            c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(u5)
-            c5 = layers.BatchNormalization()(c5)
-            c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.01))(c5)
-            c5 = layers.BatchNormalization()(c5)
-            c5 = layers.Dropout(0.2)(c5)
+            c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(u5)
+            c5 = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(c5)
+            c5 = layers.Dropout(0.1)(c5)
             
             outputs = layers.Conv2D(1, (1, 1), activation='linear')(c5)
             return models.Model(inputs=[inputs], outputs=[outputs])
 
         model = unet_model(input_shape=(chunk_size, chunk_size, 1))
-    
+
     # Use mixed precision optimizer
     optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
         tf.keras.optimizers.Adam(learning_rate=0.0001)
@@ -370,8 +345,7 @@ if __name__ == '__main__':
             train_generator,
             epochs=epochs,
             validation_data=val_generator,
-            callbacks=callbacks,
-            verbose=1
+            callbacks=callbacks
         )
     except Exception as e:
         log(f"Training failed with error: {str(e)}")
