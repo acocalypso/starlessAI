@@ -4,3 +4,5 @@ scipy
 tensorflow[and-cuda]
 scikit-learn
 pynvml
+torch
+tqdm
