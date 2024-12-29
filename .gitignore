@@ -9,3 +9,4 @@ removeStars/*.fits
 val_chunks/*
 *.keras
 processed_images.txt
+*.pt
