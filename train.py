@@ -572,7 +572,7 @@ def train_model():
     # Callbacks
     callbacks = [
         ModelCheckpoint(
-            filepath=os.path.join(MODEL_PATH, 'model-{epoch:02d}-{val_loss:.4f}.h5'),
+            filepath=os.path.join(MODEL_PATH, 'model-checkpoint.keras'),
             save_best_only=True,
             monitor='val_loss',
             mode='min'
@@ -602,7 +602,7 @@ def train_model():
     )
     
     # Finales Modell speichern
-    model.save(os.path.join(MODEL_PATH, 'final_model.h5'))
+    model.save(os.path.join(MODEL_PATH, 'final_model.keras'))
     
     # Training-Historie plotten
     plt.figure(figsize=(12, 5))
