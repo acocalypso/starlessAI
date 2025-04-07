@@ -25,10 +25,10 @@ MODEL_PATH = "models/starless_model"
 TRAINING_DATA_PATH = "data/training"
 VALIDATION_DATA_PATH = "data/validation"
 TEST_DATA_PATH = "data/test"
-USE_MASKS = True  # Setzt auf True, wenn Sternmasken verwendet werden sollen
+USE_MASKS = False  # Setzt auf True, wenn Sternmasken verwendet werden sollen
 
 def load_image(file_path, normalize=True):
-    """Lädt ein Bild im FITS- oder PNG-Format."""
+    """Lädt ein Bild im FITS-, PNG-, TIF- oder JPEG-Format."""
     try:
         if file_path.endswith('.fits'):
             # FITS-Datei laden
@@ -41,22 +41,50 @@ def load_image(file_path, normalize=True):
                     
                 # Negative Werte auf 0 setzen
                 image = np.maximum(image, 0)
+        elif file_path.endswith(('.tif', '.tiff')):
+            # TIF-Datei laden
+            try:
+                image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+                
+                # In Graustufen konvertieren, falls RGB
+                if image is not None and len(image.shape) > 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            except:
+                # Fallback: Versuche mit tifffile zu laden
+                try:
+                    import tifffile
+                    image = tifffile.imread(file_path)
+                    
+                    # In Graustufen konvertieren, falls RGB
+                    if len(image.shape) > 2:
+                        if image.shape[2] == 3:  # RGB
+                            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                        elif image.shape[2] == 4:  # RGBA
+                            image = cv2.cvtColor(image, cv2.COLOR_RGBA2GRAY)
+                except:
+                    print(f"Konnte TIF-Datei nicht laden: {file_path}")
+                    return None
         else:
             # PNG oder andere Bildformate
             image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
             
             # Alpha-Kanal entfernen, falls vorhanden
-            if len(image.shape) > 2 and image.shape[2] == 4:
+            if image is not None and len(image.shape) > 2 and image.shape[2] == 4:
                 image = image[:,:,:3]
                 
             # In Graustufen konvertieren, falls RGB
-            if len(image.shape) > 2:
+            if image is not None and len(image.shape) > 2:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         if normalize:
-            # Für PNG-Bilder normalisieren
-            if file_path.endswith(('.png', '.jpg', '.jpeg')):
-                image = image.astype(np.float32) / 255.0
+            # Für PNG/TIF/JPG-Bilder normalisieren
+            if file_path.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff')):
+                # Stelle sicher, dass das Bild float32 ist und im Bereich [0,1]
+                if image.dtype != np.float32:
+                    if image.dtype == np.uint16:
+                        image = image.astype(np.float32) / 65535.0
+                    else:  # uint8 oder andere
+                        image = image.astype(np.float32) / 255.0
             else:
                 # Für FITS-Dateien logarithmische Normalisierung
                 image = np.log1p(image)
@@ -76,10 +104,14 @@ def apply_mask_to_remove_stars(image, mask):
     # Konvertieren der Maske in ein binäres Format (0, 1)
     binary_mask = mask > 0.5
     
+    # Konvertiere zu 8-bit für inpainting
+    img_8bit = np.clip(image * 255, 0, 255).astype(np.uint8)
+    mask_8bit = binary_mask.astype(np.uint8) * 255
+    
     # Inpainted-Version erstellen (Bereiche unter der Maske werden interpoliert)
     inpainted = cv2.inpaint(
-        (image * 255).astype(np.uint8),
-        binary_mask.astype(np.uint8) * 255,
+        img_8bit,
+        mask_8bit,
         inpaintRadius=3,
         flags=cv2.INPAINT_TELEA
     )
@@ -242,12 +274,26 @@ def process_image_pair(starry_image, starless_image=None, mask=None, augment=Tru
     if starless_image is None and mask is None:
         # Für synthetische Daten ohne Maske: Erstelle sternenlose Version durch Unschärfe
         blurred = cv2.GaussianBlur(starry_resized, (21, 21), 0)
-        median_filtered = cv2.medianBlur(blurred, 21)
-        starless_resized = median_filtered
+        
+        # Konvertiere zu 8-bit für medianBlur
+        blurred_8bit = np.clip(blurred * 255, 0, 255).astype(np.uint8)
+        median_filtered_8bit = cv2.medianBlur(blurred_8bit, 21)
+        
+        # Zurück zu float32 normalisieren
+        starless_resized = median_filtered_8bit.astype(np.float32) / 255.0
     elif starless_image is None and mask is not None:
         # Mit Maske: Erstelle sternenlose Version durch Inpainting
         mask_resized = cv2.resize(mask, (IMG_SIZE, IMG_SIZE))
-        starless_resized = apply_mask_to_remove_stars(starry_resized, mask_resized)
+        
+        # Konvertiere Bilder für inpainting zu 8-bit
+        img_8bit = np.clip(starry_resized * 255, 0, 255).astype(np.uint8)
+        mask_8bit = np.clip(mask_resized * 255, 0, 255).astype(np.uint8)
+        
+        # Inpainting durchführen
+        inpainted_8bit = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        
+        # Zurück zu float32
+        starless_resized = inpainted_8bit.astype(np.float32) / 255.0
     else:
         # Mit vorhandenem sternenlosen Bild
         starless_resized = cv2.resize(starless_image, (IMG_SIZE, IMG_SIZE))

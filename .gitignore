@@ -9,3 +9,8 @@ removeStars/*.fits
 val_chunks/*
 *.keras
 processed_files.json
+data/training/*/*.fits
+data/training/*/*.tif
+data/training/*/*.png
+data/training/*/*.fit
+data/validation/*/*
