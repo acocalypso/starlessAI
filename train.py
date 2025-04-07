@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import glob
 from skimage.metrics import structural_similarity as ssim
 from tensorflow.keras.applications import VGG16
+import json
 
 # Konfiguration
 IMG_SIZE = 256
@@ -364,7 +365,7 @@ def load_dataset(data_dir, is_training=True):
         # Für das Training: Mischen, Batching und Präfetching
         dataset = dataset.shuffle(buffer_size=min(len(image_pairs), 1000))
         dataset = dataset.batch(BATCH_SIZE)
-        dataset = dataset.repeat()
+        dataset = dataset.repeat()  # Wiederholt das Dataset für mehrere Epochen
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
     else:
         # Für die Validierung: Nur Batching und Präfetching
@@ -514,6 +515,62 @@ class PerceptualLoss(tf.keras.losses.Loss):
         
         return loss
 
+def check_for_new_data(known_files_path="models/processed_files.json"):
+    """Prüft auf neue Trainingsdaten."""
+    # Lade Liste der bereits verarbeiteten Dateien
+    processed_files = []
+    if os.path.exists(known_files_path):
+        with open(known_files_path, 'r') as f:
+            processed_files = json.load(f)
+    
+    # Aktuelle Dateien finden
+    current_files = []
+    for ext in ['.fits', '.png', '.jpg', '.jpeg']:
+        current_files.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starry', f'*{ext}')))
+    
+    # Neue Dateien identifizieren
+    new_files = [f for f in current_files if f not in processed_files]
+    
+    if new_files:
+        print(f"Gefunden: {len(new_files)} neue Trainingsdateien")
+    else:
+        print("Keine neuen Trainingsdateien gefunden")
+    
+    # Aktualisierte Liste speichern
+    with open(known_files_path, 'w') as f:
+        json.dump(current_files, f)
+    
+    return len(new_files) > 0
+
+def resume_training():
+    """Prüft auf vorhandene Checkpoints und setzt Training fort."""
+    # Prüfen, ob Modell existiert
+    latest_checkpoint = tf.train.latest_checkpoint(MODEL_PATH)
+    
+    if latest_checkpoint:
+        print(f"Lade vorhandenes Modell von {latest_checkpoint}")
+        model = build_unet_with_attention()
+        model.load_weights(latest_checkpoint)
+        
+        # Lade Trainingshistorie, falls vorhanden
+        history_file = os.path.join(MODEL_PATH, 'training_history.json')
+        initial_epoch = 0
+        history_dict = {}
+        
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                history_dict = json.load(f)
+                if 'epochs' in history_dict:
+                    initial_epoch = history_dict['epochs']
+                    print(f"Setze Training bei Epoch {initial_epoch} fort")
+    else:
+        print("Kein vorhandenes Modell gefunden. Starte neues Training.")
+        model = build_unet_with_attention()
+        initial_epoch = 0
+        history_dict = {'loss': [], 'mse': [], 'val_loss': [], 'val_mse': [], 'epochs': 0}
+    
+    return model, initial_epoch, history_dict
+
 def train_model():
     """Hauptfunktion zum Training des Modells."""
     # Mixed Precision aktivieren für schnelleres Training
@@ -521,6 +578,12 @@ def train_model():
         policy = tf.keras.mixed_precision.Policy('mixed_float16')
         tf.keras.mixed_precision.set_global_policy(policy)
         print("Mixed Precision aktiviert")
+    
+    # Prüfe auf neue Daten
+    has_new_data = check_for_new_data()
+    
+    # Lade vorhandenes Modell oder erstelle neues
+    model, initial_epoch, history_dict = resume_training()
     
     # Datasets laden
     train_dataset, num_train_samples = load_dataset(TRAINING_DATA_PATH, is_training=True)
@@ -538,20 +601,13 @@ def train_model():
         train_size = int(0.8 * num_train_samples)
         val_size = num_train_samples - train_size
         
-        train_dataset = train_dataset.shuffle(buffer_size=num_train_samples)
-        val_dataset = train_dataset.skip(train_size).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-        train_dataset = train_dataset.take(train_size)
-        
+        # Erstelle eine Kopie des Trainingsdatensatzes für die Validierung
+        val_dataset = load_dataset(TRAINING_DATA_PATH, is_training=False)[0]
         num_val_samples = val_size
     
     print(f"Trainingsdaten: {num_train_samples} Samples")
     print(f"Validierungsdaten: {num_val_samples} Samples")
     
-    # Model erstellen
-    model = build_unet_with_attention()
-    print(model.summary())
-    
-    # Rest der Funktion bleibt unverändert...
     # Loss und Optimizer
     combined_loss = CombinedLoss(alpha=0.7)
     perceptual_loss = PerceptualLoss()
@@ -594,13 +650,33 @@ def train_model():
     # Model-Verzeichnis erstellen, falls nicht vorhanden
     os.makedirs(MODEL_PATH, exist_ok=True)
     
+    # Berechne Schritte pro Epoche basierend auf Batch-Größe
+    steps_per_epoch = max(1, num_train_samples // BATCH_SIZE)
+    validation_steps = max(1, num_val_samples // BATCH_SIZE)
+    
     # Training starten
     history = model.fit(
         train_dataset,
         epochs=EPOCHS,
+        initial_epoch=initial_epoch,
+        steps_per_epoch=steps_per_epoch,
         validation_data=val_dataset,
+        validation_steps=validation_steps,
         callbacks=callbacks
     )
+    
+    # Aktualisiere Trainingshistorie
+    for key in history.history:
+        if key in history_dict:
+            history_dict[key].extend(history.history[key])
+        else:
+            history_dict[key] = history.history[key]
+    
+    history_dict['epochs'] += len(history.history['loss'])
+    
+    # Speichere Trainingshistorie
+    with open(os.path.join(MODEL_PATH, 'training_history.json'), 'w') as f:
+        json.dump(history_dict, f)
     
     # Finales Modell speichern
     model.save(os.path.join(MODEL_PATH, 'final_model.keras'))
@@ -608,16 +684,16 @@ def train_model():
     # Training-Historie plotten
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'])
-    plt.plot(history.history['val_loss'])
+    plt.plot(history_dict['loss'])
+    plt.plot(history_dict['val_loss'])
     plt.title('Model Loss')
     plt.ylabel('Loss')
     plt.xlabel('Epoch')
     plt.legend(['Train', 'Validation'], loc='upper right')
     
     plt.subplot(1, 2, 2)
-    plt.plot(history.history['mse'])
-    plt.plot(history.history['val_mse'])
+    plt.plot(history_dict['mse'])
+    plt.plot(history_dict['val_mse'])
     plt.title('Model MSE')
     plt.ylabel('MSE')
     plt.xlabel('Epoch')
@@ -627,8 +703,7 @@ def train_model():
     plt.savefig(os.path.join(MODEL_PATH, 'training_history.png'))
     plt.close()
     
-    return model, history
-
+    return model, history_dict
 
 def predict_and_visualize(model, test_image_path, output_dir="results"):
     """Vorhersage und Visualisierung der Ergebnisse."""
@@ -680,7 +755,7 @@ def predict_and_visualize(model, test_image_path, output_dir="results"):
     plt.savefig(os.path.join(output_dir, f"{file_name}_prediction.png"))
     plt.close()
     
-    # FITS-Datei speichern
+    # FITS-Datei oder PNG speichern
     if test_image_path.endswith('.fits'):
         fits.writeto(
             os.path.join(output_dir, f"{file_name}_starless.fits"),

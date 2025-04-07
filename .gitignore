@@ -8,4 +8,4 @@ removeStars/*.fit
 removeStars/*.fits
 val_chunks/*
 *.keras
-processed_images.txt
+processed_files.json
