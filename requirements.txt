@@ -4,3 +4,8 @@ scipy
 tensorflow[and-cuda]
 scikit-learn
 pynvml
+opencv-python
+matplotlib
+tqdm
+pillow
+scikit-image
