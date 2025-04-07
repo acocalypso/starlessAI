@@ -364,6 +364,7 @@ def load_dataset(data_dir, is_training=True):
         # Für das Training: Mischen, Batching und Präfetching
         dataset = dataset.shuffle(buffer_size=min(len(image_pairs), 1000))
         dataset = dataset.batch(BATCH_SIZE)
+        dataset = dataset.repeat()
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
     else:
         # Für die Validierung: Nur Batching und Präfetching
