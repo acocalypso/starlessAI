@@ -543,34 +543,14 @@ def check_for_new_data(known_files_path="models/processed_files.json"):
     return len(new_files) > 0
 
 def resume_training():
-"""Prüft auf vorhandene Checkpoints und setzt Training fort."""
-# Prüfen, ob Modell existiert
-checkpoint_path = os.path.join(MODEL_PATH, 'model-checkpoint.keras')
+    """Prüft auf vorhandene Checkpoints und setzt Training fort."""
+    # Prüfen, ob Modell existiert
+    checkpoint_path = os.path.join(MODEL_PATH, 'model-checkpoint.keras')
 
-text
-if os.path.exists(checkpoint_path):
-    print(f"Lade vorhandenes Modell von {checkpoint_path}")
-    model = build_unet_with_attention()
-    model.load_weights(checkpoint_path)
-    
-    # Lade Trainingshistorie, falls vorhanden
-    history_file = os.path.join(MODEL_PATH, 'training_history.json')
-    initial_epoch = 0
-    history_dict = {}
-    
-    if os.path.exists(history_file):
-        with open(history_file, 'r') as f:
-            history_dict = json.load(f)
-            if 'epochs' in history_dict:
-                initial_epoch = history_dict['epochs']
-                print(f"Setze Training bei Epoch {initial_epoch} fort")
-else:
-    # Fallback: Prüfe auf TensorFlow Checkpoints
-    latest_checkpoint = tf.train.latest_checkpoint(MODEL_PATH)
-    if latest_checkpoint:
-        print(f"Lade vorhandenes Modell von {latest_checkpoint}")
+    if os.path.exists(checkpoint_path):
+        print(f"Lade vorhandenes Modell von {checkpoint_path}")
         model = build_unet_with_attention()
-        model.load_weights(latest_checkpoint)
+        model.load_weights(checkpoint_path)
         
         # Lade Trainingshistorie, falls vorhanden
         history_file = os.path.join(MODEL_PATH, 'training_history.json')
@@ -584,12 +564,31 @@ else:
                     initial_epoch = history_dict['epochs']
                     print(f"Setze Training bei Epoch {initial_epoch} fort")
     else:
-        print("Kein vorhandenes Modell gefunden. Starte neues Training.")
-        model = build_unet_with_attention()
-        initial_epoch = 0
-        history_dict = {'loss': [], 'mse': [], 'val_loss': [], 'val_mse': [], 'epochs': 0}
-
-return model, initial_epoch, history_dict
+        # Fallback: Prüfe auf TensorFlow Checkpoints
+        latest_checkpoint = tf.train.latest_checkpoint(MODEL_PATH)
+        if latest_checkpoint:
+            print(f"Lade vorhandenes Modell von {latest_checkpoint}")
+            model = build_unet_with_attention()
+            model.load_weights(latest_checkpoint)
+            
+            # Lade Trainingshistorie, falls vorhanden
+            history_file = os.path.join(MODEL_PATH, 'training_history.json')
+            initial_epoch = 0
+            history_dict = {}
+            
+            if os.path.exists(history_file):
+                with open(history_file, 'r') as f:
+                    history_dict = json.load(f)
+                    if 'epochs' in history_dict:
+                        initial_epoch = history_dict['epochs']
+                        print(f"Setze Training bei Epoch {initial_epoch} fort")
+        else:
+            print("Kein vorhandenes Modell gefunden. Starte neues Training.")
+            model = build_unet_with_attention()
+            initial_epoch = 0
+            history_dict = {'loss': [], 'mse': [], 'val_loss': [], 'val_mse': [], 'epochs': 0}
+    
+    return model, initial_epoch, history_dict
 
 def train_model():
     """Hauptfunktion zum Training des Modells."""
