@@ -740,25 +740,67 @@ def train_model():
     # Lade vorhandenes Modell oder erstelle neues
     model, initial_epoch, history_dict = resume_training()
     
-    # Datasets laden
-    train_dataset, num_train_samples = load_dataset(TRAINING_DATA_PATH, is_training=True)
-    
-    # Prüfen, ob Validierungsdaten existieren
+    # Prüfen, ob Validierungsdaten existieren und ggf. kopieren
     validation_starry_path = os.path.join(VALIDATION_DATA_PATH, 'starry')
-    has_validation_data = os.path.exists(validation_starry_path) and len(os.listdir(validation_starry_path)) > 0
+    validation_starless_path = os.path.join(VALIDATION_DATA_PATH, 'starless')
+    
+    has_validation_data = os.path.exists(validation_starry_path) and os.path.isdir(validation_starry_path)
     
     if has_validation_data:
-        print("Lade separate Validierungsdaten...")
-        val_dataset, num_val_samples = load_dataset(VALIDATION_DATA_PATH, is_training=False)
-    else:
-        print("Keine Validierungsdaten gefunden. Verwende 20% der Trainingsdaten für Validierung...")
-        # Teile das Trainings-Dataset in Training und Validierung auf
-        train_size = int(0.8 * num_train_samples)
-        val_size = num_train_samples - train_size
+        # Prüfen, ob Bilder im Validierungsverzeichnis vorhanden sind
+        validation_images = []
+        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            validation_images.extend(glob.glob(os.path.join(validation_starry_path, f'*{ext}')))
         
-        # Erstelle eine Kopie des Trainingsdatensatzes für die Validierung
-        val_dataset = load_dataset(TRAINING_DATA_PATH, is_training=False)[0]
-        num_val_samples = val_size
+        if not validation_images:
+            has_validation_data = False
+            print("Validierungsverzeichnis existiert, enthält aber keine Bilder.")
+    
+    # Wenn keine Validierungsdaten vorhanden sind, kopiere einige aus dem Trainingsverzeichnis
+    if not has_validation_data:
+        print("Keine Validierungsdaten gefunden. Kopiere 20% der Trainingsdaten für Validierung...")
+        
+        # Stelle sicher, dass die Validierungsverzeichnisse existieren
+        os.makedirs(validation_starry_path, exist_ok=True)
+        os.makedirs(validation_starless_path, exist_ok=True)
+        
+        # Finde alle Trainingsbilder
+        training_starry_images = []
+        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            training_starry_images.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starry', f'*{ext}')))
+        
+        # Finde alle starless Trainingsbilder
+        training_starless_images = []
+        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            training_starless_images.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starless', f'*{ext}')))
+        
+        # Wähle zufällig 20% der Bilder für die Validierung aus
+        num_validation = max(1, int(len(training_starry_images) * 0.2))
+        validation_indices = np.random.choice(len(training_starry_images), num_validation, replace=False)
+        
+        # Kopiere die ausgewählten Bilder in das Validierungsverzeichnis
+        import shutil
+        for idx in validation_indices:
+            starry_img_path = training_starry_images[idx]
+            starry_filename = os.path.basename(starry_img_path)
+            
+            # Kopiere das Bild mit Sternen
+            shutil.copy2(starry_img_path, os.path.join(validation_starry_path, starry_filename))
+            print(f"Kopiere {starry_img_path} nach {os.path.join(validation_starry_path, starry_filename)}")
+            
+            # Versuche, das entsprechende sternenlose Bild zu finden und zu kopieren
+            base_name = os.path.basename(starry_img_path).split('.')[0]
+            matching_starless = [p for p in training_starless_images if base_name in p]
+            
+            if matching_starless:
+                starless_img_path = matching_starless[0]
+                starless_filename = os.path.basename(starless_img_path)
+                shutil.copy2(starless_img_path, os.path.join(validation_starless_path, starless_filename))
+                print(f"Kopiere {starless_img_path} nach {os.path.join(validation_starless_path, starless_filename)}")
+    
+    # Datasets laden
+    train_dataset, num_train_samples = load_dataset(TRAINING_DATA_PATH, is_training=True)
+    val_dataset, num_val_samples = load_dataset(VALIDATION_DATA_PATH, is_training=False)
     
     print(f"Trainingsdaten: {num_train_samples} Samples")
     print(f"Validierungsdaten: {num_val_samples} Samples")
@@ -827,13 +869,16 @@ def train_model():
     )
     
     # Aktualisiere Trainingshistorie
-    for key in history.history:
-        if key in history_dict:
-            history_dict[key].extend(history.history[key])
-        else:
-            history_dict[key] = history.history[key]
-    
-    history_dict['epochs'] += len(history.history['loss'])
+    if hasattr(history, 'history') and 'loss' in history.history and len(history.history['loss']) > 0:
+        for key in history.history:
+            if key in history_dict:
+                history_dict[key].extend(history.history[key])
+            else:
+                history_dict[key] = history.history[key]
+        
+        history_dict['epochs'] += len(history.history['loss'])
+    else:
+        print("Kein weiteres Training durchgeführt (möglicherweise Maximum an Epochen erreicht).")
     
     # Speichere Trainingshistorie
     with open(os.path.join(MODEL_PATH, 'training_history.json'), 'w') as f:
@@ -865,6 +910,7 @@ def train_model():
     plt.close()
     
     return model, history_dict
+
 
 def predict_and_visualize(model, test_image_path, output_dir="results"):
     """Vorhersage und Visualisierung der Ergebnisse."""
