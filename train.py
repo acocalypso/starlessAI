@@ -16,16 +16,16 @@ import json
 
 # Konfiguration
 IMG_SIZE = 256
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 EPOCHS = 200
-initial_learning_rate = 1e-3
+initial_learning_rate = 1e-4
 DATA_AUGMENTATION = True
 MIXED_PRECISION = True
 MODEL_PATH = "models/starless_model"
 TRAINING_DATA_PATH = "data/training"
 VALIDATION_DATA_PATH = "data/validation"
 TEST_DATA_PATH = "data/test"
-USE_MASKS = False  # Setzt auf True, wenn Sternmasken verwendet werden sollen
+USE_MASKS = True  # Setzt auf True, wenn Sternmasken verwendet werden sollen
 
 def load_image(file_path, normalize=True):
     """Lädt ein Bild im FITS-, PNG-, TIF- oder JPEG-Format mit Unterstützung für lineare Daten."""
@@ -841,12 +841,6 @@ def train_model():
             patience=15,
             restore_best_weights=True,
             verbose=1
-        ),
-        ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6
         )
     ]
     
