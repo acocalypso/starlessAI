@@ -940,14 +940,21 @@ def predict_and_visualize(model, test_image_path, output_dir="results"):
     print(f"starless_predicted min: {np.min(starless_predicted)}, max: {np.max(starless_predicted)}")
     print(f"width: {width}, height: {height}")
     
+    # Stelle sicher, dass das Array den richtigen Datentyp hat und keine ungültigen Werte enthält
+    starless_predicted = np.nan_to_num(starless_predicted, nan=0.0, posinf=1.0, neginf=0.0)
+    starless_predicted = starless_predicted.astype(np.float32)
+    
     # Zurück zur ursprünglichen Größe skalieren mit Fehlerbehandlung
     try:
-        starless_resized = cv2.resize(starless_predicted, (width, height))
+        starless_resized = cv2.resize(starless_predicted, (width, height), interpolation=cv2.INTER_LINEAR)
     except cv2.error as e:
         print(f"Error during resize: {e}")
         print(f"starless_predicted shape: {starless_predicted.shape}")
         print(f"width: {width}, height: {height}")
-        return
+        
+        # Fallback: Verwende NumPy für die Größenänderung
+        from skimage.transform import resize as sk_resize
+        starless_resized = sk_resize(starless_predicted, (height, width), order=1, mode='reflect', anti_aliasing=True)
     
     # Visualisieren
     plt.figure(figsize=(15, 5))
@@ -990,7 +997,6 @@ def predict_and_visualize(model, test_image_path, output_dir="results"):
         )
     
     return starless_resized
-
 
 if __name__ == "__main__":
     print("StarlessAI Training startet...")
