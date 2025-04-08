@@ -16,9 +16,9 @@ import json
 
 # Konfiguration
 IMG_SIZE = 256
-BATCH_SIZE = 8
-EPOCHS = 100
-LEARNING_RATE = 1e-4
+BATCH_SIZE = 16
+EPOCHS = 200
+initial_learning_rate = 1e-3
 DATA_AUGMENTATION = True
 MIXED_PRECISION = True
 MODEL_PATH = "models/starless_model"
@@ -385,6 +385,7 @@ def process_image_pair(starry_image, starless_image=None, mask=None, augment=Tru
     
     return starry_resized, starless_resized
 
+
 def load_dataset(data_dir, is_training=True):
     """Lädt Trainingsdaten und erstellt einen tf.data.Dataset."""
     # Suche nach allen Bilddateien (FITS und PNG)
@@ -508,27 +509,46 @@ def attention_gate(x, g, filters):
     
     return att_x
 
+def residual_block(x, filters):
+    """Residual Block für verbesserte Gradientenflüsse."""
+    shortcut = x
+    
+    # Falls die Kanaldimensionen nicht übereinstimmen, passe shortcut an
+    if shortcut.shape[-1] != filters:
+        shortcut = layers.Conv2D(filters, 1, padding='same')(shortcut)
+    
+    x = layers.Conv2D(filters, 3, padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Conv2D(filters, 3, padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    
+    x = layers.Add()([shortcut, x])
+    return layers.Activation('relu')(x)
+
 def build_unet_with_attention():
     """Verbesserte U-Net-Architektur mit Attention-Mechanismen."""
     # Input
     inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 1))
     
-    # Encoder
+    # Encoder mit Residual-Blöcken
     conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(inputs)
-    conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(conv1)
+    conv1 = residual_block(conv1, 64)
     pool1 = layers.MaxPooling2D(pool_size=(2, 2))(conv1)
-    
-    conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(pool1)
-    conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(conv2)
+    pool1 = layers.Dropout(0.1)(pool1)  # Leichter Dropout für Regularisierung
+
+    conv2 = residual_block(pool1, 128)
     pool2 = layers.MaxPooling2D(pool_size=(2, 2))(conv2)
-    
-    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(pool2)
-    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(conv3)
+    pool2 = layers.Dropout(0.1)(pool2)
+
+    conv3 = residual_block(pool2, 256)
     pool3 = layers.MaxPooling2D(pool_size=(2, 2))(conv3)
-    
-    conv4 = layers.Conv2D(512, 3, activation='relu', padding='same')(pool3)
-    conv4 = layers.Conv2D(512, 3, activation='relu', padding='same')(conv4)
+    pool3 = layers.Dropout(0.2)(pool3)
+
+    conv4 = residual_block(pool3, 512)
     pool4 = layers.MaxPooling2D(pool_size=(2, 2))(conv4)
+    pool4 = layers.Dropout(0.2)(pool4)
+
     
     # Bridge
     conv5 = layers.Conv2D(1024, 3, activation='relu', padding='same')(pool4)
@@ -710,6 +730,10 @@ def train_model():
         tf.keras.mixed_precision.set_global_policy(policy)
         print("Mixed Precision aktiviert")
     
+    # XLA-Kompilierung aktivieren
+    tf.config.optimizer.set_jit(True)
+    print("XLA-Kompilierung aktiviert")
+    
     # Prüfe auf neue Daten
     has_new_data = check_for_new_data()
     
@@ -748,7 +772,12 @@ def train_model():
         p_loss = perceptual_loss(y_true, y_pred)
         return c_loss + 0.1 * p_loss
     
-    optimizer = optimizers.Adam(learning_rate=LEARNING_RATE)
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate,
+    decay_steps=100,
+    decay_rate=0.96,
+    staircase=True)
+    optimizer = optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)  # Gradientenclipping hinzugefügt
     
     # Kompilieren
     model.compile(
@@ -767,8 +796,9 @@ def train_model():
         ),
         EarlyStopping(
             monitor='val_loss',
-            patience=10,
-            restore_best_weights=True
+            patience=15,
+            restore_best_weights=True,
+            verbose=1
         ),
         ReduceLROnPlateau(
             monitor='val_loss',
