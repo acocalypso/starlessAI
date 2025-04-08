@@ -660,8 +660,16 @@ def check_for_new_data(known_files_path="models/processed_files.json"):
     for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
         current_files.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starry', f'*{ext}')))
     
+    # Normalisieren Sie die Pfade für einen konsistenten Vergleich
+    processed_files = [os.path.normpath(p) for p in processed_files]
+    current_files = [os.path.normpath(p) for p in current_files]
+    
     # Neue Dateien identifizieren
     new_files = [f for f in current_files if f not in processed_files]
+    
+    print(f"Verarbeitete Dateien: {len(processed_files)}")
+    print(f"Aktuelle Dateien: {len(current_files)}")
+    print(f"Neue Dateien: {len(new_files)}")
     
     if new_files:
         print(f"Gefunden: {len(new_files)} neue Trainingsdateien")
@@ -673,6 +681,7 @@ def check_for_new_data(known_files_path="models/processed_files.json"):
         json.dump(current_files, f)
     
     return len(new_files) > 0
+
 
 def resume_training():
     """Prüft auf vorhandene Checkpoints und setzt Training fort."""
@@ -926,12 +935,22 @@ def predict_and_visualize(model, test_image_path, output_dir="results"):
     # Nachbearbeitung für Spikes und Artefakte
     starless_predicted = starless_predicted.squeeze()
     
-    # Zurück zur ursprünglichen Größe skalieren
-    starless_resized = cv2.resize(starless_predicted, (width, height))
+    # Debug-Informationen
+    print(f"starless_predicted shape: {starless_predicted.shape}")
+    print(f"starless_predicted min: {np.min(starless_predicted)}, max: {np.max(starless_predicted)}")
+    print(f"width: {width}, height: {height}")
+    
+    # Zurück zur ursprünglichen Größe skalieren mit Fehlerbehandlung
+    try:
+        starless_resized = cv2.resize(starless_predicted, (width, height))
+    except cv2.error as e:
+        print(f"Error during resize: {e}")
+        print(f"starless_predicted shape: {starless_predicted.shape}")
+        print(f"width: {width}, height: {height}")
+        return
     
     # Visualisieren
     plt.figure(figsize=(15, 5))
-    
     plt.subplot(1, 3, 1)
     plt.imshow(starry_image, cmap='viridis')
     plt.title('Original mit Sternen')
@@ -971,6 +990,7 @@ def predict_and_visualize(model, test_image_path, output_dir="results"):
         )
     
     return starless_resized
+
 
 if __name__ == "__main__":
     print("StarlessAI Training startet...")

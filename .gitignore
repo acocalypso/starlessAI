@@ -14,3 +14,4 @@ data/training/*/*.tif
 data/training/*/*.png
 data/training/*/*.fit
 data/validation/*/*
+data/test/*
