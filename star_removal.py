@@ -22,22 +22,26 @@ def parse_arguments():
                         help='Radius für Inpainting-Algorithmus')
     parser.add_argument('--chunk_size', type=int, default=256,
                         help='Größe der Bildabschnitte für die Verarbeitung')
-    parser.add_argument('--overlap', type=int, default=32,
+    parser.add_argument('--overlap', type=int, default=64,
                         help='Überlappung zwischen Bildabschnitten')
     return parser.parse_args()
 
 def is_linear(image_data, image_path):
-    """Versucht zu erkennen, ob ein Bild linear ist."""
+    """Verbesserte Erkennung, ob ein Bild linear ist."""
     # FITS sind typischerweise linear
     if image_path.lower().endswith(('.fits', '.fit')):
         return True
     
-    # Histogramm-basierte Heuristik für andere Formate
+    # PNG-Dateien sind in der Regel bereits gestretcht
+    if image_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+        return False
+    
+    # Für TIFF-Dateien: Prüfe Histogramm
     if image_data.dtype == np.uint8:
         # 8-bit Bilder sind in der Regel nicht linear
         return False
     
-    # Prüfe Histogramm-Verteilung
+    # Prüfe Histogramm-Verteilung nur für andere Formate
     hist, bins = np.histogram(image_data.flatten(), bins=256)
     if np.sum(hist[:128]) > 0.9 * np.sum(hist):
         # Wenn 90% der Pixel im unteren Helligkeitsbereich liegen, 
@@ -46,8 +50,9 @@ def is_linear(image_data, image_path):
     
     return False
 
+
 def load_image(file_path):
-    """Lädt ein Bild im unterstützten Format."""
+    """Lädt ein Bild im unterstützten Format mit Farberhaltung."""
     try:
         if file_path.lower().endswith(('.fits', '.fit')):
             # FITS-Datei laden
@@ -67,18 +72,14 @@ def load_image(file_path):
                 
                 return image, header, True  # Linear
         else:
-            # PNG, TIFF oder andere Bildformate
+            # PNG, TIFF oder andere Bildformate - Farbe erhalten
             image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
             
             # Alpha-Kanal entfernen, falls vorhanden
             if image is not None and len(image.shape) > 2 and image.shape[2] == 4:
                 image = image[:,:,:3]
-                
-            # In Graustufen konvertieren, falls RGB
-            if image is not None and len(image.shape) > 2:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             
-            # Konvertiere zu float32
+            # Konvertiere zu float32, aber behalte Farbkanäle bei
             if image.dtype == np.uint16:
                 image = image.astype(np.float32) / 65535.0
                 linear = True
@@ -124,7 +125,14 @@ def unstretch_image(stretched_image, original_image):
 
 def extract_chunks(image, chunk_size=256, overlap=32):
     """Teilt ein Bild in überlappende Chunks auf."""
-    height, width = image.shape
+    # Prüfe, ob das Bild farbig ist
+    if len(image.shape) > 2:
+        height, width, channels = image.shape
+        is_color = True
+    else:
+        height, width = image.shape
+        is_color = False
+        
     chunks = []
     positions = []
     
@@ -175,17 +183,18 @@ def blend_chunks(chunks, positions, original_shape, weights=None):
     result = np.zeros((height, width), dtype=np.float32)
     weight_map = np.zeros((height, width), dtype=np.float32)
     
-    # Wenn keine Gewichte angegeben sind, erstelle ein Gewichtungsmuster
-    # mit höheren Werten in der Mitte und niedrigeren an den Rändern
+    # Verbesserte Gewichtungsfunktion mit weicherem Übergang
     if weights is None:
         chunk_size = chunks[0].shape[0]
         y, x = np.ogrid[:chunk_size, :chunk_size]
         center_y, center_x = chunk_size // 2, chunk_size // 2
-        # Euklidische Distanz vom Zentrum, normalisiert
-        dist_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-        max_dist = np.sqrt(center_x**2 + center_y**2)
-        # Gewichte sind höher in der Mitte (1.0) und niedriger an den Rändern (0.1)
-        weights = 1.0 - 0.9 * (dist_from_center / max_dist)
+        
+        # Verwende eine Gaußsche Gewichtung für weichere Übergänge
+        sigma = chunk_size / 6  # Parameter für die Breite der Gaußkurve
+        weights = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
+        
+        # Normalisiere die Gewichte
+        weights = weights / np.max(weights)
     
     # Füge die Chunks zusammen
     for chunk, (start_y, start_x, end_y, end_x) in zip(chunks, positions):
@@ -206,10 +215,25 @@ def blend_chunks(chunks, positions, original_shape, weights=None):
     
     return result
 
-def process_image_with_chunks(image, model, chunk_size=256, overlap=32, threshold=0.2, inpaint_radius=3):
-    """Verarbeitet ein Bild in Chunks und erzeugt Sternmaske und sternenfreies Bild."""
-    # Extrahiere Chunks
-    chunks, positions = extract_chunks(image, chunk_size, overlap)
+
+def process_image_with_chunks(image, model, chunk_size=256, overlap=64, threshold=0.2, inpaint_radius=3):
+    """Verarbeitet ein Bild in Chunks und erzeugt Sternmaske und sternenfreies Bild mit Farberhaltung."""
+    # Prüfe, ob das Bild farbig ist
+    is_color = len(image.shape) > 2 and image.shape[2] >= 3
+    
+    if is_color:
+        # Konvertiere zu YUV-Farbraum (Y=Luminanz, UV=Farbe)
+        image_yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+        # Extrahiere Luminanzkanal
+        lum_channel = image_yuv[:,:,0].copy()
+        # Normalisiere auf [0,1]
+        lum_channel = lum_channel.astype(np.float32) / 255.0
+        
+        # Verarbeite nur den Luminanzkanal
+        chunks, positions = extract_chunks(lum_channel, chunk_size, overlap)
+    else:
+        # Graustufenbild direkt verarbeiten
+        chunks, positions = extract_chunks(image, chunk_size, overlap)
     
     # Verarbeite jeden Chunk
     processed_chunks = []
@@ -217,42 +241,69 @@ def process_image_with_chunks(image, model, chunk_size=256, overlap=32, threshol
         processed_chunk = process_chunk(chunk, model)
         processed_chunks.append(processed_chunk)
     
-    # Erstelle Gewichtungsmuster für das Zusammenfügen
+    # Verbesserte Gewichtung für das Zusammenfügen
+    chunk_size = chunks[0].shape[0]
     y, x = np.ogrid[:chunk_size, :chunk_size]
     center_y, center_x = chunk_size // 2, chunk_size // 2
-    dist_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-    max_dist = np.sqrt(center_x**2 + center_y**2)
-    weights = 1.0 - 0.9 * (dist_from_center / max_dist)
     
-    # Füge die verarbeiteten Chunks zusammen
-    starless_image = blend_chunks(processed_chunks, positions, image.shape, weights)
+    # Verwende eine Gaußsche Gewichtung für weichere Übergänge
+    sigma = chunk_size / 6  # Parameter für die Breite der Gaußkurve
+    weights = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
     
-    # Sternmaske erzeugen (Differenz zwischen Original und sternenfreiem Bild)
-    stars_mask = np.clip(image - starless_image, 0, 1)
+    # Normalisiere die Gewichte
+    weights = weights / np.max(weights)
     
-    # Binäre Maske mit Schwellwert
-    binary_mask = (stars_mask > threshold).astype(np.uint8)
-    
-    # Rauschen entfernen und Maske verbessern
-    kernel = np.ones((3, 3), np.uint8)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-    
-    # Inpainting für verbesserte Hintergrundrekonstruktion
-    img_8bit = np.clip(image * 255, 0, 255).astype(np.uint8)
-    mask_8bit = binary_mask * 255
-    
-    # Inpainting durchführen
-    inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
-    
-    # Zurück zu float32 [0,1]
-    inpainted = inpainted.astype(np.float32) / 255.0
-    
-    # Kombiniere Modellvorhersage mit Inpainting für bessere Ergebnisse
-    # Verwende Inpainting für Bereiche mit Sternen, sonst die Modellvorhersage
-    final_starless = np.where(binary_mask > 0, inpainted, starless_image)
-    
-    return final_starless, binary_mask
+    if is_color:
+        # Nur Luminanzkanal verarbeiten
+        starless_lum = blend_chunks(processed_chunks, positions, lum_channel.shape, weights)
+        
+        # Sternmaske aus Luminanzkanal erzeugen
+        stars_mask = np.clip(lum_channel - starless_lum, 0, 1)
+        binary_mask = (stars_mask > threshold).astype(np.uint8)
+        
+        # Rauschen entfernen und Maske verbessern
+        kernel = np.ones((3, 3), np.uint8)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Inpainting auf dem Originalbild durchführen, um Farben zu erhalten
+        img_8bit = np.clip(image * 255, 0, 255).astype(np.uint8)
+        mask_8bit = binary_mask * 255
+        
+        # Inpainting durchführen
+        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
+        
+        # Zurück zu float32 [0,1]
+        inpainted = inpainted.astype(np.float32) / 255.0
+        
+        # Kombiniere Inpainting mit Originalbild
+        final_starless = np.where(np.expand_dims(binary_mask, axis=-1) > 0, inpainted, image)
+        
+        return final_starless, binary_mask
+    else:
+        # Für Graustufenbilder
+        starless_image = blend_chunks(processed_chunks, positions, image.shape, weights)
+        
+        # Sternmaske erzeugen
+        stars_mask = np.clip(image - starless_image, 0, 1)
+        binary_mask = (stars_mask > threshold).astype(np.uint8)
+        
+        # Maske verbessern
+        kernel = np.ones((3, 3), np.uint8)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Inpainting
+        img_8bit = np.clip(image * 255, 0, 255).astype(np.uint8)
+        mask_8bit = binary_mask * 255
+        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
+        inpainted = inpainted.astype(np.float32) / 255.0
+        
+        # Kombiniere Ergebnisse
+        final_starless = np.where(binary_mask > 0, inpainted, starless_image)
+        
+        return final_starless, binary_mask
+
 
 def save_result(image, file_path, original_header=None):
     """Speichert ein Bild im entsprechenden Format."""
@@ -391,7 +442,7 @@ def main():
                 
         print(f"Verarbeitet: {image_path} -> {starless_path}, {mask_path}")
             
-        print(f"Alle Bilder verarbeitet. Ergebnisse in {output_dir}")
+    print(f"Alle Bilder verarbeitet. Ergebnisse in {output_dir}")
         
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()

@@ -30,7 +30,7 @@ USE_MASKS = True  # Setzt auf True, wenn Sternmasken verwendet werden sollen
 def load_image(file_path, normalize=True):
     """Lädt ein Bild im FITS-, PNG-, TIF- oder JPEG-Format mit Unterstützung für lineare Daten."""
     try:
-        if file_path.endswith('.fits'):
+        if file_path.endswith(('.fits', '.fit')):
             # FITS-Datei laden (bewahrt Linearität)
             with fits.open(file_path) as hdul:
                 image = hdul[0].data
@@ -390,20 +390,20 @@ def load_dataset(data_dir, is_training=True):
     """Lädt Trainingsdaten und erstellt einen tf.data.Dataset."""
     # Suche nach allen Bilddateien (FITS und PNG)
     starry_paths = []
-    for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+    for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
         starry_paths.extend(glob.glob(os.path.join(data_dir, 'starry', f'*{ext}')))
     starry_paths = sorted(starry_paths)
     
     # Suche nach sternenfreien Bildern
     starless_paths = []
-    for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+    for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
         starless_paths.extend(glob.glob(os.path.join(data_dir, 'starless', f'*{ext}')))
     starless_paths = sorted(starless_paths)
     
     # Suche nach Masken (wenn verfügbar)
     mask_paths = []
     if USE_MASKS:
-        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+        for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
             mask_paths.extend(glob.glob(os.path.join(data_dir, 'masks', f'*{ext}')))
         mask_paths = sorted(mask_paths)
     
@@ -657,7 +657,7 @@ def check_for_new_data(known_files_path="models/processed_files.json"):
     
     # Aktuelle Dateien finden
     current_files = []
-    for ext in ['.fits', '.fit' '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+    for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
         current_files.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starry', f'*{ext}')))
     
     # Neue Dateien identifizieren
@@ -749,7 +749,7 @@ def train_model():
     if has_validation_data:
         # Prüfen, ob Bilder im Validierungsverzeichnis vorhanden sind
         validation_images = []
-        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+        for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
             validation_images.extend(glob.glob(os.path.join(validation_starry_path, f'*{ext}')))
         
         if not validation_images:
@@ -766,12 +766,12 @@ def train_model():
         
         # Finde alle Trainingsbilder
         training_starry_images = []
-        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+        for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
             training_starry_images.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starry', f'*{ext}')))
         
         # Finde alle starless Trainingsbilder
         training_starless_images = []
-        for ext in ['.fits', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+        for ext in ['.fits', '.fit', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
             training_starless_images.extend(glob.glob(os.path.join(TRAINING_DATA_PATH, 'starless', f'*{ext}')))
         
         # Wähle zufällig 20% der Bilder für die Validierung aus
@@ -992,7 +992,7 @@ if __name__ == "__main__":
     # Optional: Testbilder verarbeiten, wenn vorhanden
     if os.path.exists(TEST_DATA_PATH):
         test_images = []
-        for ext in ['.fits', '.png', '.jpg', '.jpeg']:
+        for ext in ['.fits','.fit', 'tif','tiff', '.png', '.jpg', '.jpeg']:
             test_images.extend(glob.glob(os.path.join(TEST_DATA_PATH, f"*{ext}")))
         
         for img_path in test_images:
