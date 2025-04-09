@@ -16,7 +16,7 @@ import json
 
 # Konfiguration
 IMG_SIZE = 256
-BATCH_SIZE = 4
+BATCH_SIZE = 8
 EPOCHS = 200
 initial_learning_rate = 1e-4
 DATA_AUGMENTATION = True
