@@ -15,3 +15,4 @@ data/training/*/*.png
 data/training/*/*.fit
 data/validation/*/*
 data/test/*
+models/starless_model/*
