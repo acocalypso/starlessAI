@@ -238,9 +238,35 @@ def process_image_with_chunks(image, model, chunk_size=256, overlap=64, threshol
             # Füge die Chunks zusammen
             starless_channel = blend_chunks(processed_chunks, positions, channel_data.shape)
             
-            # Erzeuge Sternmaske
+            # Verbesserte Sternerkennung
+            # Adaptiver Threshold für lokale Helligkeitsunterschiede
+            local_thresh = cv2.adaptiveThreshold(
+                (channel_data * 255).astype(np.uint8),
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                21,
+                2
+            )
+            
+            # Erzeuge Sternmaske mit verbesserter Detektion
             stars_mask = np.clip(channel_data - starless_channel, 0, 1)
+            stars_mask = stars_mask * (local_thresh / 255.0)  # Kombiniere mit adaptivem Threshold
             binary_mask = (stars_mask > threshold).astype(np.uint8)
+            
+            # Entferne kleine Objekte (keine Sterne)
+            min_star_size = 3
+            binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, 
+                                         np.ones((min_star_size, min_star_size), np.uint8))
+            
+            # Erkenne und schütze potenzielle Galaxienkerne und helle Nebelbereiche
+            large_structures = cv2.morphologyEx(binary_mask, cv2.MORPH_DILATE, 
+                                              np.ones((15, 15), np.uint8))
+            large_bright = (channel_data > np.percentile(channel_data, 99.9)).astype(np.uint8)
+            protected_regions = large_structures & large_bright
+            
+            # Entferne geschützte Regionen aus der Sternmaske
+            binary_mask = binary_mask & ~protected_regions
             
             starless_channels.append(starless_channel)
             binary_masks.append(binary_mask)
@@ -253,15 +279,24 @@ def process_image_with_chunks(image, model, chunk_size=256, overlap=64, threshol
         final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, kernel)
         final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
         
+        # Verbessertes Inpainting mit Detailerhaltung
+        # Erweitere die Inpainting-Region leicht für bessere Übergänge
+        dilated_mask = cv2.dilate(final_mask, np.ones((3,3), np.uint8))
+        
         # Inpainting auf dem Originalbild
         img_8bit = (np.clip(image, 0, 1) * 255).astype(np.uint8)
-        mask_8bit = (final_mask * 255).astype(np.uint8)
-        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
+        mask_8bit = (dilated_mask * 255).astype(np.uint8)
+        
+        # Verwende NS-Inpainting für bessere Detailerhaltung
+        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, 
+                               flags=cv2.INPAINT_NS)
         inpainted = inpainted.astype(np.float32) / 255.0
         
-        # Kombiniere die Ergebnisse
+        # Kombiniere die Ergebnisse mit weichem Übergang
+        blend_mask = cv2.GaussianBlur(dilated_mask.astype(np.float32), (5,5), 0)
         starless_image = np.stack(starless_channels, axis=-1)
-        final_starless = np.where(np.expand_dims(final_mask, -1) > 0, inpainted, starless_image)
+        final_starless = (1 - blend_mask[..., None]) * starless_image + \
+                        blend_mask[..., None] * inpainted
         
         return final_starless, final_mask
     else:
