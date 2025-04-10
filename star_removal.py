@@ -218,69 +218,74 @@ def blend_chunks(chunks, positions, original_shape, weights=None):
 
 def process_image_with_chunks(image, model, chunk_size=256, overlap=64, threshold=0.2, inpaint_radius=3):
     """Verarbeitet ein Bild in Chunks und erzeugt Sternmaske und sternenfreies Bild mit Farberhaltung."""
-    # Prüfe, ob das Bild farbig ist
     is_color = len(image.shape) > 2 and image.shape[2] >= 3
     
     if is_color:
-        # Konvertiere zu YUV-Farbraum (Y=Luminanz, UV=Farbe)
-        image_yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
-        # Extrahiere Luminanzkanal
-        lum_channel = image_yuv[:,:,0].copy()
-        # Normalisiere auf [0,1]
-        lum_channel = lum_channel.astype(np.float32) / 255.0
+        # Verarbeite jeden Farbkanal separat
+        starless_channels = []
+        binary_masks = []
         
-        # Verarbeite nur den Luminanzkanal
-        chunks, positions = extract_chunks(lum_channel, chunk_size, overlap)
+        for channel in range(3):
+            channel_data = image[:,:,channel]
+            chunks, positions = extract_chunks(channel_data, chunk_size, overlap)
+            
+            # Verarbeite jeden Chunk
+            processed_chunks = []
+            for chunk in tqdm(chunks, desc=f"Verarbeite Kanal {channel}", leave=False):
+                processed_chunk = process_chunk(chunk, model)
+                processed_chunks.append(processed_chunk)
+            
+            # Füge die Chunks zusammen
+            starless_channel = blend_chunks(processed_chunks, positions, channel_data.shape)
+            
+            # Erzeuge Sternmaske
+            stars_mask = np.clip(channel_data - starless_channel, 0, 1)
+            binary_mask = (stars_mask > threshold).astype(np.uint8)
+            
+            starless_channels.append(starless_channel)
+            binary_masks.append(binary_mask)
+        
+        # Kombiniere die Masken
+        final_mask = np.maximum.reduce(binary_masks)
+        
+        # Verbessere die Maske
+        kernel = np.ones((3,3), np.uint8)
+        final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, kernel)
+        final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Inpainting auf dem Originalbild
+        img_8bit = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+        mask_8bit = (final_mask * 255).astype(np.uint8)
+        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
+        inpainted = inpainted.astype(np.float32) / 255.0
+        
+        # Kombiniere die Ergebnisse
+        starless_image = np.stack(starless_channels, axis=-1)
+        final_starless = np.where(np.expand_dims(final_mask, -1) > 0, inpainted, starless_image)
+        
+        return final_starless, final_mask
     else:
         # Graustufenbild direkt verarbeiten
         chunks, positions = extract_chunks(image, chunk_size, overlap)
     
-    # Verarbeite jeden Chunk
-    processed_chunks = []
-    for chunk in tqdm(chunks, desc="Verarbeite Chunks", leave=False):
-        processed_chunk = process_chunk(chunk, model)
-        processed_chunks.append(processed_chunk)
-    
-    # Verbesserte Gewichtung für das Zusammenfügen
-    chunk_size = chunks[0].shape[0]
-    y, x = np.ogrid[:chunk_size, :chunk_size]
-    center_y, center_x = chunk_size // 2, chunk_size // 2
-    
-    # Verwende eine Gaußsche Gewichtung für weichere Übergänge
-    sigma = chunk_size / 6  # Parameter für die Breite der Gaußkurve
-    weights = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
-    
-    # Normalisiere die Gewichte
-    weights = weights / np.max(weights)
-    
-    if is_color:
-        # Nur Luminanzkanal verarbeiten
-        starless_lum = blend_chunks(processed_chunks, positions, lum_channel.shape, weights)
+        # Verarbeite jeden Chunk
+        processed_chunks = []
+        for chunk in tqdm(chunks, desc="Verarbeite Chunks", leave=False):
+            processed_chunk = process_chunk(chunk, model)
+            processed_chunks.append(processed_chunk)
         
-        # Sternmaske aus Luminanzkanal erzeugen
-        stars_mask = np.clip(lum_channel - starless_lum, 0, 1)
-        binary_mask = (stars_mask > threshold).astype(np.uint8)
+        # Verbesserte Gewichtung für das Zusammenfügen
+        chunk_size = chunks[0].shape[0]
+        y, x = np.ogrid[:chunk_size, :chunk_size]
+        center_y, center_x = chunk_size // 2, chunk_size // 2
         
-        # Rauschen entfernen und Maske verbessern
-        kernel = np.ones((3, 3), np.uint8)
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
+        # Verwende eine Gaußsche Gewichtung für weichere Übergänge
+        sigma = chunk_size / 6  # Parameter für die Breite der Gaußkurve
+        weights = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
         
-        # Inpainting auf dem Originalbild durchführen, um Farben zu erhalten
-        img_8bit = np.clip(image * 255, 0, 255).astype(np.uint8)
-        mask_8bit = binary_mask * 255
+        # Normalisiere die Gewichte
+        weights = weights / np.max(weights)
         
-        # Inpainting durchführen
-        inpainted = cv2.inpaint(img_8bit, mask_8bit, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
-        
-        # Zurück zu float32 [0,1]
-        inpainted = inpainted.astype(np.float32) / 255.0
-        
-        # Kombiniere Inpainting mit Originalbild
-        final_starless = np.where(np.expand_dims(binary_mask, axis=-1) > 0, inpainted, image)
-        
-        return final_starless, binary_mask
-    else:
         # Für Graustufenbilder
         starless_image = blend_chunks(processed_chunks, positions, image.shape, weights)
         
@@ -338,20 +343,32 @@ def save_result(image, file_path, original_header=None):
 
 def visualize_results(original, starless, mask, output_path):
     """Erzeugt eine Visualisierung der Ergebnisse."""
-    # Normalisierung für bessere Visualisierung
-    norm = ImageNormalize(stretch=SqrtStretch(), interval=PercentileInterval(98.0))
-    
     plt.figure(figsize=(15, 5))
     
-    plt.subplot(1, 3, 1)
-    plt.imshow(original, cmap='viridis', norm=norm)
-    plt.title('Original')
-    plt.axis('off')
-    
-    plt.subplot(1, 3, 2)
-    plt.imshow(starless, cmap='viridis', norm=norm)
-    plt.title('Ohne Sterne')
-    plt.axis('off')
+    # Für Farbbilder
+    if len(original.shape) > 2:
+        plt.subplot(1, 3, 1)
+        plt.imshow(np.clip(original, 0, 1))
+        plt.title('Original')
+        plt.axis('off')
+        
+        plt.subplot(1, 3, 2)
+        plt.imshow(np.clip(starless, 0, 1))
+        plt.title('Ohne Sterne')
+        plt.axis('off')
+    else:
+        # Für Graustufenbilder
+        norm = ImageNormalize(stretch=SqrtStretch(), interval=PercentileInterval(98.0))
+        
+        plt.subplot(1, 3, 1)
+        plt.imshow(original, cmap='viridis', norm=norm)
+        plt.title('Original')
+        plt.axis('off')
+        
+        plt.subplot(1, 3, 2)
+        plt.imshow(starless, cmap='viridis', norm=norm)
+        plt.title('Ohne Sterne')
+        plt.axis('off')
     
     plt.subplot(1, 3, 3)
     plt.imshow(mask, cmap='gray')
